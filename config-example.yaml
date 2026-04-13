@@ -1,0 +1,25 @@
+servers:
+  default:
+    openapi:
+      url: https://agent-tools.example.com/openapi/api.json
+      check_md5: https://agent-tools.example.com/openapi/api.md5
+      # check_interval: 300   # seconds; fallback freshness check for both specs
+      headers:
+        Authorization: "Bearer <your-token>"
+        X-Role-Id: "<your-role-id>"   # optional
+    mcp:
+      url: https://agent-tools.example.com/mcp/sse
+      headers:
+        Authorization: "Bearer <your-token>"
+        X-Role-Id: "<your-role-id>"   # optional
+  # mcpserverA:
+  #   mcp:
+  #     url: https://other.example.com/mcp
+  #     headers:
+  #       Authorization: "Bearer <other-token>"
+llm:
+  type: openai       # "openai" (default, OpenAI-compatible endpoint) or "anthropic"
+  base_url: https://api.openai.com   # optional; omit to use Anthropic directly (requires type: anthropic)
+  api_key: ""        # or set ANTHROPIC_API_KEY env var
+  model: gpt-4.1     # optional; defaults to gpt-4o (openai) or claude-sonnet-4-6 (anthropic)
+log_file: /var/log/agent-tools.log
