@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,117 @@ import (
 	"agent-tools/config"
 	"agent-tools/tools"
 )
+
+// orderedProp holds a single schema property preserving JSON key order.
+type orderedProp struct {
+	Name        string
+	Type        schemaType
+	Description string
+	Ref         string
+	ItemsType   schemaType
+	ItemsRef    string
+}
+
+// orderedProperties parses a JSON object's properties in declaration order.
+type orderedProperties struct {
+	props []orderedProp
+}
+
+func (o *orderedProperties) UnmarshalJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		var prop struct {
+			Type        schemaType `json:"type"`
+			Description string     `json:"description"`
+			Ref         string     `json:"$ref"`
+			Items       *struct {
+				Type schemaType `json:"type"`
+				Ref  string     `json:"$ref"`
+			} `json:"items"`
+		}
+		if err := dec.Decode(&prop); err != nil {
+			return err
+		}
+		p := orderedProp{
+			Name:        key.(string),
+			Type:        prop.Type,
+			Description: prop.Description,
+			Ref:         prop.Ref,
+		}
+		if prop.Items != nil {
+			p.ItemsType = prop.Items.Type
+			p.ItemsRef = prop.Items.Ref
+		}
+		o.props = append(o.props, p)
+	}
+	return nil
+}
+
+// schemaDef represents a components/schemas entry.
+type schemaDef struct {
+	Properties orderedProperties `json:"properties"`
+	Required   []string          `json:"required"`
+}
+
+// refShortName extracts the last segment of a $ref path.
+func refShortName(ref string) string {
+	parts := strings.Split(ref, "/")
+	return parts[len(parts)-1]
+}
+
+// resolveParams converts orderedProps to ToolParams, recursively expanding $ref.
+// visited prevents infinite loops on circular refs.
+func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string, visited map[string]bool) []tools.ToolParam {
+	var params []tools.ToolParam
+	for _, p := range props {
+		if strings.HasPrefix(p.Name, "$") {
+			continue
+		}
+		param := tools.ToolParam{
+			Name:        p.Name,
+			Description: p.Description,
+			In:          in,
+		}
+		t := p.Type
+		switch {
+		case t == "" && p.Ref != "":
+			// object ref
+			refName := refShortName(p.Ref)
+			t = schemaType(refName)
+			if !visited[refName] {
+				if def, ok := schemas[refName]; ok {
+					visited[refName] = true
+					param.Properties = resolveParams(def.Properties.props, schemas, in, visited)
+					delete(visited, refName)
+				}
+			}
+		case t == "array":
+			if p.ItemsRef != "" {
+				refName := refShortName(p.ItemsRef)
+				t = schemaType("array[" + refName + "]")
+				if !visited[refName] {
+					if def, ok := schemas[refName]; ok {
+						visited[refName] = true
+						param.Properties = resolveParams(def.Properties.props, schemas, in, visited)
+						delete(visited, refName)
+					}
+				}
+			} else if p.ItemsType != "" {
+				t = schemaType("array[" + string(p.ItemsType) + "]")
+			}
+		}
+		param.Type = string(t)
+		params = append(params, param)
+	}
+	return params
+}
 
 // Client fetches OpenAPI spec, caches per-tool files, and calls tools via HTTP.
 type Client struct {
@@ -99,6 +211,19 @@ func (c *Client) callHTTP(t *tools.ToolSchema, args map[string]any) (string, err
 		case "query":
 			query.Set(p.Name, s)
 		case "body":
+			// complex params (object/array with sub-fields) must be valid JSON
+			if s, ok := val.(string); ok && len(s) > 0 {
+				if s[0] == '{' || s[0] == '[' {
+					var parsed any
+					if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+						return "", fmt.Errorf("parameter %q: invalid JSON: %w", p.Name, err)
+					}
+					body[p.Name] = parsed
+					continue
+				} else if len(p.Properties) > 0 {
+					return "", fmt.Errorf("parameter %q requires a JSON value (object or array)", p.Name)
+				}
+			}
 			body[p.Name] = val
 		}
 	}
@@ -191,7 +316,10 @@ func (c *Client) fetch(rawURL string) ([]byte, error) {
 // parseSpec parses an OpenAPI 3.x JSON spec into tool schemas.
 func parseSpec(data []byte) ([]tools.ToolSchema, error) {
 	var spec struct {
-		Paths map[string]map[string]*opObject `json:"paths"`
+		Paths      map[string]map[string]*opObject `json:"paths"`
+		Components struct {
+			Schemas map[string]schemaDef `json:"schemas"`
+		} `json:"components"`
 	}
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return nil, err
@@ -226,19 +354,26 @@ func parseSpec(data []byte) ([]tools.ToolSchema, error) {
 			}
 			if op.RequestBody != nil {
 				for _, ct := range op.RequestBody.Content {
+					schema := ct.Schema
+					// resolve top-level $ref if inline properties are absent
+					if len(schema.Properties.props) == 0 && schema.Ref != "" {
+						refName := refShortName(schema.Ref)
+						if def, ok := spec.Components.Schemas[refName]; ok {
+							schema.Properties = def.Properties
+							if len(schema.Required) == 0 {
+								schema.Required = def.Required
+							}
+						}
+					}
 					reqSet := map[string]bool{}
-					for _, r := range ct.Schema.Required {
+					for _, r := range schema.Required {
 						reqSet[r] = true
 					}
-					for name, prop := range ct.Schema.Properties {
-						t.Params = append(t.Params, tools.ToolParam{
-							Name:        name,
-							Type:        string(prop.Type),
-							Description: prop.Description,
-							Required:    reqSet[name],
-							In:          "body",
-						})
+					params := resolveParams(schema.Properties.props, spec.Components.Schemas, "body", map[string]bool{})
+					for i := range params {
+						params[i].Required = reqSet[params[i].Name]
 					}
+					t.Params = append(t.Params, params...)
 					break
 				}
 			}
@@ -302,11 +437,9 @@ type opObject struct {
 	RequestBody *struct {
 		Content map[string]struct {
 			Schema struct {
-				Properties map[string]struct {
-					Type        schemaType `json:"type"`
-					Description string     `json:"description"`
-				} `json:"properties"`
-				Required []string `json:"required"`
+				Ref        string             `json:"$ref"`
+				Properties orderedProperties  `json:"properties"`
+				Required   []string           `json:"required"`
 			} `json:"schema"`
 		} `json:"content"`
 	} `json:"requestBody"`

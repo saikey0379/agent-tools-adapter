@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -293,11 +294,7 @@ func runDescribe(ctx context.Context, callerType, serverName, toolName string) e
 			fmt.Printf("Description: %s\n\n", t.Description)
 			fmt.Printf("Parameters:\n")
 			for _, p := range t.Params {
-				req := ""
-				if p.Required {
-					req = " (required)"
-				}
-				fmt.Printf("  --%-25s %s [%s]%s\n", p.Name, p.Description, p.Type, req)
+				printParam(p, 0)
 			}
 			return nil
 		}
@@ -341,6 +338,51 @@ func resolveCallerForTool(ctx context.Context, callerType, serverName, toolName 
 		}
 	}
 	return nil, fmt.Errorf("tool %q not found in any server", toolName)
+}
+
+func printParam(p tools.ToolParam, depth int) {
+	indent := strings.Repeat("  ", depth+1)
+	req := ""
+	if p.Required {
+		req = " (required)"
+	}
+	in := p.In
+	if in == "" {
+		in = "query"
+	}
+	if len(p.Properties) > 0 && depth == 0 {
+		example, _ := json.Marshal(buildParamExample(p))
+		fmt.Printf("%s--%-25s [json, %s]%s e.g. '%s'\n", indent, p.Name, in, req, string(example))
+	} else if depth == 0 {
+		fmt.Printf("%s--%-25s [%s, %s]%s %s\n", indent, p.Name, p.Type, in, req, p.Description)
+	}
+}
+
+func buildParamExample(p tools.ToolParam) any {
+	if len(p.Properties) == 0 {
+		return scalarExample(p.Type)
+	}
+	obj := map[string]any{}
+	for _, child := range p.Properties {
+		obj[child.Name] = buildParamExample(child)
+	}
+	if strings.HasPrefix(p.Type, "array[") {
+		return []any{obj}
+	}
+	return obj
+}
+
+func scalarExample(t string) any {
+	switch t {
+	case "integer":
+		return 0
+	case "boolean":
+		return false
+	case "array", "array[string]":
+		return []any{}
+	default:
+		return ""
+	}
 }
 
 func firstLine(s string) string {

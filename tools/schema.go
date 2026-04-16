@@ -8,11 +8,12 @@ import (
 
 // ToolParam describes a single tool parameter
 type ToolParam struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
-	Required    bool   `json:"required"`
-	In          string `json:"in,omitempty"` // path, query, body (openapi only)
+	Name        string      `json:"name"`
+	Type        string      `json:"type"`
+	Description string      `json:"description"`
+	Required    bool        `json:"required"`
+	In          string      `json:"in,omitempty"`         // path, query, body (openapi only)
+	Properties  []ToolParam `json:"properties,omitempty"` // nested fields for object/array types
 }
 
 // ToolSchema describes a single tool
