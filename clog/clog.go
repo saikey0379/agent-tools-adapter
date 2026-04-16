@@ -17,7 +17,7 @@ func Init(logFile string) {
 		return
 	}
 	if logFile == "" {
-		logFile = "/var/log/agent-tools.log"
+		logFile = "/var/log/agent-tools-cli.log"
 	}
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

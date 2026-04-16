@@ -77,7 +77,7 @@ func runConfigInit() error {
         X-Role-Id: "<your-role-id>"
 llm:
   token: ""
-log_file: /var/log/agent-tools.log
+log_file: /var/log/agent-tools-cli.log
 `
 		if err := os.WriteFile(dest, []byte(tmpl), 0600); err != nil {
 			return err

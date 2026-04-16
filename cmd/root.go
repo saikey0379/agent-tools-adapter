@@ -22,18 +22,26 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "agent-tools-cli [--ctype http|mcp|llm] [--list | <tool_name> [--describe] [flags...]]",
+	Use:   "agent-tools-cli [-t http|mcp|llm] [-l | <tool_name> [-d] [flags...]]",
 	Short: "agent-tools CLI — universal tool adapter",
 	Long: `agent-tools-cli is a universal adapter for calling platform tools via http, mcp, or llm.
 
-  agent-tools-cli --list                      list all tools (http, default)
-  agent-tools-cli --ctype mcp --list          list all tools via mcp
-  agent-tools-cli <tool> --describe           show tool parameters
+  agent-tools-cli -l                       list all tools (http, default)
+  agent-tools-cli -t mcp -l               list all tools via mcp
+  agent-tools-cli <tool> -d               show tool parameters
   agent-tools-cli <tool> [--param value ...]  call tool directly
-  agent-tools-cli --ctype llm "..."             LLM recommend mode (outputs CLI command, no execution)
-  agent-tools-cli --ctype llm "..." --exec        LLM execute mode (calls tools automatically)
+  agent-tools-cli -t llm "..."            LLM recommend mode (outputs CLI command, no execution)
+  agent-tools-cli -t llm "..." -e         LLM execute mode (calls tools automatically)
+  agent-tools-cli -t llm "..." -e -r      LLM execute mode, output raw JSON result
 
-Use --list and --describe to discover available tools and their parameters.`,
+Flags:
+  -t, --type      caller type: http (default), mcp, llm
+  -l, --list      list available tools
+  -d, --describe  show tool parameters
+  -e, --exec      execute tool via LLM (default: recommend only)
+  -r, --raw       raw tool response without LLM summary (llm -e only)
+
+Use -l and -d to discover available tools and their parameters.`,
 	DisableFlagParsing: true,
 	Args:               cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
@@ -55,7 +63,7 @@ Use --list and --describe to discover available tools and their parameters.`,
 			return err
 		}
 
-		listAll, listFull, listFilter, describe, ctype, serverName, toolName, nlInput, recommend, raw, params := parseArgs(rawArgs)
+		listAll, listFull, listFilter, describe, callerType, serverName, toolName, nlInput, recommend, raw, params := parseArgs(rawArgs)
 		ctx := context.Background()
 
 		if listAll {
@@ -63,16 +71,16 @@ Use --list and --describe to discover available tools and their parameters.`,
 			if sn == "" && toolName != "" {
 				sn = toolName
 			}
-			return runList(ctx, ctype, sn, listFull, listFilter)
+			return runList(ctx, callerType, sn, listFull, listFilter)
 		}
 		if toolName == "" {
 			return cmd.Help()
 		}
 		if describe {
-			return runDescribe(ctx, ctype, serverName, toolName)
+			return runDescribe(ctx, callerType, serverName, toolName)
 		}
 
-		if ctype == "llm" {
+		if callerType == "llm" {
 			input := nlInput
 			if input == "" {
 				input = toolName
@@ -85,7 +93,7 @@ Use --list and --describe to discover available tools and their parameters.`,
 			return llm.Run(ctx, cfg, callers, serverName, toolName, input, recommend, raw)
 		}
 
-		caller, err := newCaller(ctx, ctype, serverName)
+		caller, err := newCaller(ctx, callerType, serverName)
 		if err != nil {
 			return err
 		}
@@ -162,12 +170,12 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.agent-tools/config.yaml)")
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file (default: ~/.agent-tools/config.yaml)")
 	rootCmd.AddCommand(configCmd)
 }
 
-// newCaller builds the appropriate Caller for the given ctype and server.
-func newCaller(ctx context.Context, ctype, serverName string) (tools.Caller, error) {
+// newCaller builds the appropriate Caller for the given callerType and server.
+func newCaller(ctx context.Context, callerType, serverName string) (tools.Caller, error) {
 	if serverName == "" {
 		serverName = "default"
 	}
@@ -175,7 +183,7 @@ func newCaller(ctx context.Context, ctype, serverName string) (tools.Caller, err
 	if err != nil {
 		return nil, err
 	}
-	switch ctype {
+	switch callerType {
 	case "mcp", "llm":
 		if srv.MCP == nil {
 			return nil, fmt.Errorf("server %q has no mcp config", serverName)
@@ -189,7 +197,7 @@ func newCaller(ctx context.Context, ctype, serverName string) (tools.Caller, err
 	}
 }
 
-func runList(ctx context.Context, ctype, serverName string, listFull bool, filter string) error {
+func runList(ctx context.Context, callerType, serverName string, listFull bool, filter string) error {
 	printTools := func(name string, toolList []tools.ToolSchema) {
 		for _, t := range toolList {
 			if filter != "" {
@@ -202,7 +210,7 @@ func runList(ctx context.Context, ctype, serverName string, listFull bool, filte
 		}
 	}
 	if serverName != "" {
-		caller, err := newCallerForList(ctx, ctype, serverName, listFull)
+		caller, err := newCallerForList(ctx, callerType, serverName, listFull)
 		if err != nil {
 			return err
 		}
@@ -215,7 +223,7 @@ func runList(ctx context.Context, ctype, serverName string, listFull bool, filte
 	}
 	for name := range cfg.Servers {
 		srv, _ := cfg.Server(name)
-		switch ctype {
+		switch callerType {
 		case "mcp", "llm":
 			if srv.MCP == nil {
 				continue
@@ -225,7 +233,7 @@ func runList(ctx context.Context, ctype, serverName string, listFull bool, filte
 				continue
 			}
 		}
-		caller, err := newCallerForList(ctx, ctype, name, listFull)
+		caller, err := newCallerForList(ctx, callerType, name, listFull)
 		if err != nil {
 			fmt.Printf("# server %s: %v\n", name, err)
 			continue
@@ -241,7 +249,7 @@ func runList(ctx context.Context, ctype, serverName string, listFull bool, filte
 }
 
 // newCallerForList is like newCaller but uses filtered_url for HTTP --list (unless listFull).
-func newCallerForList(ctx context.Context, ctype, serverName string, listFull bool) (tools.Caller, error) {
+func newCallerForList(ctx context.Context, callerType, serverName string, listFull bool) (tools.Caller, error) {
 	if serverName == "" {
 		serverName = "default"
 	}
@@ -249,7 +257,7 @@ func newCallerForList(ctx context.Context, ctype, serverName string, listFull bo
 	if err != nil {
 		return nil, err
 	}
-	switch ctype {
+	switch callerType {
 	case "mcp", "llm":
 		if srv.MCP == nil {
 			return nil, fmt.Errorf("server %q has no mcp config", serverName)
@@ -270,8 +278,8 @@ func newCallerForList(ctx context.Context, ctype, serverName string, listFull bo
 	}
 }
 
-func runDescribe(ctx context.Context, ctype, serverName, toolName string) error {
-	caller, err := resolveCallerForTool(ctx, ctype, serverName, toolName)
+func runDescribe(ctx context.Context, callerType, serverName, toolName string) error {
+	caller, err := resolveCallerForTool(ctx, callerType, serverName, toolName)
 	if err != nil {
 		return err
 	}
@@ -299,12 +307,12 @@ func runDescribe(ctx context.Context, ctype, serverName, toolName string) error 
 
 // resolveCallerForTool tries default server first, then others.
 // If serverName is specified, only that server is tried.
-func resolveCallerForTool(ctx context.Context, ctype, serverName, toolName string) (tools.Caller, error) {
+func resolveCallerForTool(ctx context.Context, callerType, serverName, toolName string) (tools.Caller, error) {
 	if serverName != "" {
-		return newCaller(ctx, ctype, serverName)
+		return newCaller(ctx, callerType, serverName)
 	}
 	if _, ok := cfg.Servers["default"]; ok {
-		if caller, err := newCaller(ctx, ctype, "default"); err == nil {
+		if caller, err := newCaller(ctx, callerType, "default"); err == nil {
 			if toolList, err := caller.ListTools(ctx); err == nil {
 				for _, t := range toolList {
 					if t.Name == toolName {
@@ -318,7 +326,7 @@ func resolveCallerForTool(ctx context.Context, ctype, serverName, toolName strin
 		if name == "default" {
 			continue
 		}
-		caller, err := newCaller(ctx, ctype, name)
+		caller, err := newCaller(ctx, callerType, name)
 		if err != nil {
 			continue
 		}
@@ -365,15 +373,15 @@ func firstLine(s string) string {
 }
 
 // parseArgs manually parses raw CLI args.
-func parseArgs(args []string) (listAll, listFull bool, listFilter string, describe bool, ctype, serverName, toolName, nlInput string, recommend, raw bool, params map[string]any) {
+func parseArgs(args []string) (listAll, listFull bool, listFilter string, describe bool, callerType, serverName, toolName, nlInput string, recommend, raw bool, params map[string]any) {
 	params = map[string]any{}
-	ctype = "http"
+	callerType = "http"
 	recommend = true
 
 	// strip --config <val> first so it doesn't confuse tool arg parsing
 	var cleaned []string
 	for i := 0; i < len(args); i++ {
-		if (args[i] == "--config" || args[i] == "-config") && i+1 < len(args) {
+		if (args[i] == "--config" || args[i] == "-config" || args[i] == "-c") && i+1 < len(args) {
 			i++ // skip value too
 			continue
 		}
@@ -384,9 +392,9 @@ func parseArgs(args []string) (listAll, listFull bool, listFilter string, descri
 	for i < len(cleaned) {
 		arg := cleaned[i]
 		switch {
-		case arg == "--list":
+		case arg == "--list" || arg == "-l":
 			listAll = true
-			if i+1 < len(cleaned) && !strings.HasPrefix(cleaned[i+1], "--") {
+			if i+1 < len(cleaned) && !strings.HasPrefix(cleaned[i+1], "-") {
 				next := cleaned[i+1]
 				if next == "all" {
 					listFull = true
@@ -395,19 +403,19 @@ func parseArgs(args []string) (listAll, listFull bool, listFilter string, descri
 				}
 				i++
 			}
-		case arg == "--describe":
+		case arg == "--describe" || arg == "-d":
 			describe = true
-		case arg == "--exec" || arg == "--execute":
+		case arg == "--exec" || arg == "--execute" || arg == "-e":
 			recommend = false
 		case arg == "--recommend":
 			recommend = true
-		case arg == "--raw":
+		case arg == "--raw" || arg == "-r":
 			raw = true
-		case (arg == "--ctype") && i+1 < len(cleaned):
+		case (arg == "--type" || arg == "-t") && i+1 < len(cleaned):
 			i++
-			ctype = cleaned[i]
-		case strings.HasPrefix(arg, "--ctype="):
-			ctype = strings.TrimPrefix(arg, "--ctype=")
+			callerType = cleaned[i]
+		case strings.HasPrefix(arg, "--type="):
+			callerType = strings.TrimPrefix(arg, "--type=")
 		case strings.HasPrefix(arg, "--") && i+1 < len(cleaned) && !strings.HasPrefix(cleaned[i+1], "--"):
 			key := strings.TrimPrefix(arg, "--")
 			var vals []string

@@ -78,7 +78,7 @@ func toolCallToCLI(name string, args map[string]any, toolList []tools.ToolSchema
 		}
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("agent-tools-cli --ctype mcp %s/%s", serverName, name))
+	sb.WriteString(fmt.Sprintf("agent-tools-cli -t mcp %s/%s", serverName, name))
 	for k, v := range args {
 		s := fmt.Sprintf("%v", v)
 		if strings.Contains(s, " ") {
