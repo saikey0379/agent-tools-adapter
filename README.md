@@ -31,7 +31,12 @@
 2. **执行工具** → `agent-tools-cli list_clusters [paraments]`
 ```
 ## 一、安装
-### 1.1. RPM包安装
+### 1.1. 安装包
+#### 1.1.2.PKG包【MacOS】
+```bash
+./build-macos.sh
+```
+#### 1.1.1.RPM包【Linux】
 - 构建RPM包
 ```bash
 ./build-rpm.sh 
@@ -39,7 +44,7 @@
 - 安装（RPM 包安装后在 PATH 中）
 ```bash
 rpm -ivh /root/rpmbuild/RPMS/x86_64/agent-tools-cli-0.0.1-1.x86_64.rpm
-```
+``` 
 ### 1.2. 手动编译安装
 - 编译
 ```bash
