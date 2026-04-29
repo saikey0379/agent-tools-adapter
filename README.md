@@ -295,3 +295,20 @@ agent-tools-cli -t llm {tool_name} "用自然语言描述需求" -e -r
 | `-d, --describe` | 查看工具详情及参数 |
 | `-e, --exec` | llm 模式：直接执行（默认为推荐模式） |
 | `-r, --raw` | llm 模式：配合 `-e` 使用，跳过 LLM 总结，输出工具原始返回 |
+| `--refresh` | 强制重新拉取 OpenAPI spec，清理 cache 里已下线的死工具（http 模式） |
+
+## 缓存刷新
+
+http 模式下工具 schema 缓存在 `~/.agent-tools/cache/<server>/tools/`，默认按 `check_md5` / `check_interval` 失效；若两者都未配置，兜底 10 分钟 TTL。
+
+如果怀疑 cache 里有服务端已下线的死工具，手动触发刷新：
+
+```bash
+# 强制重新拉取 spec 并清理 cache 里已不存在的工具
+agent-tools-cli -l --refresh
+```
+
+`--refresh` 会:
+1. 跳过 cache 有效性检查，重新请求 OpenAPI spec
+2. 写入当前 spec 里的所有工具
+3. 删除 cache 里 spec 之外的残留 `.json`（之前的版本只加不删，导致 cache 膨胀）

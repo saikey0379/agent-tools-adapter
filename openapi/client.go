@@ -129,16 +129,30 @@ func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string,
 
 // Client fetches OpenAPI spec, caches per-tool files, and calls tools via HTTP.
 type Client struct {
-	cfg   *config.OpenAPIConfig
-	cache *Cache
+	cfg          *config.OpenAPIConfig
+	cache        *Cache
+	forceRefresh bool
 }
 
-func NewClient(cfg *config.OpenAPIConfig, cacheDir string) *Client {
-	return &Client{cfg: cfg, cache: NewCache(cacheDir)}
+// Option configures a Client at construction time.
+type Option func(*Client)
+
+// WithRefresh forces the next ListTools / cache-miss path to re-fetch the spec,
+// bypassing any valid cache. Stale tool files are pruned as part of the refresh.
+func WithRefresh(r bool) Option {
+	return func(c *Client) { c.forceRefresh = r }
+}
+
+func NewClient(cfg *config.OpenAPIConfig, cacheDir string, opts ...Option) *Client {
+	c := &Client{cfg: cfg, cache: NewCache(cacheDir)}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func (c *Client) ListTools(ctx context.Context) ([]tools.ToolSchema, error) {
-	if c.cache.IsValid(c.cfg.CheckMD5, c.cfg.CheckInterval, c.cfg.Headers) {
+	if !c.forceRefresh && c.cache.IsValid(c.cfg.CheckMD5, c.cfg.CheckInterval, c.cfg.Headers) {
 		return c.cache.ReadAllTools()
 	}
 	return c.fetchAndCache()

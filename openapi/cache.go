@@ -17,6 +17,11 @@ const md5File = "openapi.md5"
 const tsFile = "openapi.ts"
 const toolsSubDir = "tools"
 
+// defaultCheckInterval is used when neither check_md5 nor check_interval is configured.
+// Without a staleness signal the cache would be held forever, so fall back to a
+// conservative TTL (10 minutes) to bound drift.
+const defaultCheckInterval = 600
+
 // Cache manages per-tool JSON files under dir with global MD5 consistency.
 type Cache struct {
 	dir string
@@ -33,7 +38,8 @@ func (c *Cache) toolFile(name string) string {
 // IsValid checks cache freshness.
 // If checkMD5URL is set, fetches remote MD5 and compares (takes priority).
 // If checkInterval > 0, checks if cache is older than interval seconds.
-// Otherwise valid if any tool files exist.
+// If neither is configured, falls back to defaultCheckInterval — a non-empty
+// cache is never treated as valid indefinitely.
 func (c *Cache) IsValid(checkMD5URL string, checkInterval int, headers map[string]string) bool {
 	if checkMD5URL != "" && checkInterval > 0 {
 		// check_md5 takes priority per spec
@@ -45,7 +51,10 @@ func (c *Cache) IsValid(checkMD5URL string, checkInterval int, headers map[strin
 	if checkInterval > 0 {
 		return c.checkByInterval(checkInterval)
 	}
-	return c.hasTools()
+	if !c.hasTools() {
+		return false
+	}
+	return c.checkByInterval(defaultCheckInterval)
 }
 
 func (c *Cache) checkByMD5(url string, headers map[string]string) bool {
@@ -116,18 +125,33 @@ func (c *Cache) ReadAllTools() ([]tools.ToolSchema, error) {
 }
 
 // Write writes all tool schemas to per-tool files and updates MD5/ts.
+// Tools absent from toolList are pruned so the cache matches the current spec.
 func (c *Cache) Write(toolList []tools.ToolSchema, specMD5 string) error {
 	dir := filepath.Join(c.dir, toolsSubDir)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
+	keep := make(map[string]struct{}, len(toolList))
 	for _, t := range toolList {
 		data, err := json.Marshal(t)
 		if err != nil {
-			continue
+			return fmt.Errorf("marshal tool %q: %w", t.Name, err)
 		}
 		if err := os.WriteFile(filepath.Join(dir, t.Name+".json"), data, 0600); err != nil {
 			return err
+		}
+		keep[t.Name+".json"] = struct{}{}
+	}
+	// Prune stale tools that no longer exist in the current spec.
+	// Run after all writes succeed so a partial failure leaves the old cache intact.
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+				continue
+			}
+			if _, ok := keep[e.Name()]; !ok {
+				_ = os.Remove(filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 	if specMD5 != "" {

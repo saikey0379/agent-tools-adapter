@@ -41,6 +41,7 @@ Flags:
   -d, --describe  show tool parameters
   -e, --exec      execute tool via LLM (default: recommend only)
   -r, --raw       raw tool response without LLM summary (llm -e only)
+      --refresh   force re-fetch OpenAPI spec, prune stale cached tools
 
 Use -l and -d to discover available tools and their parameters.`,
 	DisableFlagParsing: true,
@@ -64,21 +65,26 @@ Use -l and -d to discover available tools and their parameters.`,
 			return err
 		}
 
-		listAll, listFull, listFilter, describe, callerType, serverName, toolName, nlInput, recommend, raw, params := parseArgs(rawArgs)
+		listAll, listFull, listFilter, describe, callerType, serverName, toolName, nlInput, recommend, raw, refresh, params := parseArgs(rawArgs)
 		ctx := context.Background()
+
+		// `--refresh` with no other action: silently re-fetch spec and prune stale cache
+		if refresh && !listAll && !describe && toolName == "" && nlInput == "" {
+			return runRefresh(ctx, callerType, serverName)
+		}
 
 		if listAll {
 			sn := serverName
 			if sn == "" && toolName != "" {
 				sn = toolName
 			}
-			return runList(ctx, callerType, sn, listFull, listFilter)
+			return runList(ctx, callerType, sn, listFull, listFilter, refresh)
 		}
 		if toolName == "" {
 			return cmd.Help()
 		}
 		if describe {
-			return runDescribe(ctx, callerType, serverName, toolName)
+			return runDescribe(ctx, callerType, serverName, toolName, refresh)
 		}
 
 		if callerType == "llm" {
@@ -94,7 +100,7 @@ Use -l and -d to discover available tools and their parameters.`,
 			return llm.Run(ctx, cfg, callers, serverName, toolName, input, recommend, raw)
 		}
 
-		caller, err := newCaller(ctx, callerType, serverName)
+		caller, err := newCaller(ctx, callerType, serverName, refresh)
 		if err != nil {
 			return err
 		}
@@ -118,7 +124,7 @@ Use -l and -d to discover available tools and their parameters.`,
 // Otherwise, "default" is tried first, then all other servers with MCP config.
 func buildLLMCallers(ctx context.Context, serverName string) ([]tools.ServerCaller, error) {
 	if serverName != "" {
-		caller, err := newCaller(ctx, "llm", serverName)
+		caller, err := newCaller(ctx, "llm", serverName, false)
 		if err != nil {
 			return nil, err
 		}
@@ -128,7 +134,7 @@ func buildLLMCallers(ctx context.Context, serverName string) ([]tools.ServerCall
 	var callers []tools.ServerCaller
 	// default first
 	if _, ok := cfg.Servers["default"]; ok {
-		if caller, err := newCaller(ctx, "llm", "default"); err == nil {
+		if caller, err := newCaller(ctx, "llm", "default", false); err == nil {
 			callers = append(callers, tools.ServerCaller{Name: "default", Caller: caller})
 		}
 	}
@@ -141,7 +147,7 @@ func buildLLMCallers(ctx context.Context, serverName string) ([]tools.ServerCall
 		if srv.MCP == nil {
 			continue
 		}
-		if caller, err := newCaller(ctx, "llm", name); err == nil {
+		if caller, err := newCaller(ctx, "llm", name, false); err == nil {
 			callers = append(callers, tools.ServerCaller{Name: name, Caller: caller})
 		}
 	}
@@ -176,7 +182,8 @@ func init() {
 }
 
 // newCaller builds the appropriate Caller for the given callerType and server.
-func newCaller(ctx context.Context, callerType, serverName string) (tools.Caller, error) {
+// refresh is passed through to the HTTP/OpenAPI client to force a cache re-fetch.
+func newCaller(ctx context.Context, callerType, serverName string, refresh bool) (tools.Caller, error) {
 	if serverName == "" {
 		serverName = "default"
 	}
@@ -194,11 +201,94 @@ func newCaller(ctx context.Context, callerType, serverName string) (tools.Caller
 		if srv.OpenAPI == nil {
 			return nil, fmt.Errorf("server %q has no openapi config", serverName)
 		}
-		return openapiPkg.NewClient(srv.OpenAPI, config.CacheDir(serverName)), nil
+		return openapiPkg.NewClient(srv.OpenAPI, config.CacheDir(serverName), openapiPkg.WithRefresh(refresh)), nil
 	}
 }
 
-func runList(ctx context.Context, callerType, serverName string, listFull bool, filter string) error {
+// countCachedTools returns the number of .json files in the cache tools/ dir and
+// the number of duplicate-name tools from the original list that collapsed into
+// fewer files on disk (parseSpec emitted them but Write's upsert overwrote).
+func countCachedTools(cacheDir string, emitted int) (cached, dupes int) {
+	entries, err := os.ReadDir(cacheDir + "/tools")
+	if err != nil {
+		return 0, 0
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			cached++
+		}
+	}
+	if emitted > cached {
+		dupes = emitted - cached
+	}
+	return
+}
+
+// runRefresh force-refreshes the OpenAPI cache for the given server (or all http
+// servers if none specified). Refreshes both the full and filtered caches when
+// filtered_url is configured. Prints a one-line summary per cache — no tool list.
+func runRefresh(ctx context.Context, callerType, serverName string) error {
+	if callerType != "" && callerType != "http" {
+		return fmt.Errorf("--refresh only applies to http caller, got %q", callerType)
+	}
+	refreshOne := func(name string) error {
+		srv, err := cfg.Server(name)
+		if err != nil {
+			return err
+		}
+		if srv.OpenAPI == nil {
+			return fmt.Errorf("server %q has no openapi config", name)
+		}
+		// full cache
+		full := openapiPkg.NewClient(srv.OpenAPI, config.CacheDir(name), openapiPkg.WithRefresh(true))
+		toolList, err := full.ListTools(ctx)
+		if err != nil {
+			return err
+		}
+		cached, dupes := countCachedTools(config.CacheDir(name), len(toolList))
+		if dupes > 0 {
+			fmt.Printf("refreshed %s: %d tools (%d duplicate names in spec collapsed)\n", name, cached, dupes)
+		} else {
+			fmt.Printf("refreshed %s: %d tools\n", name, cached)
+		}
+		// filtered cache, if configured
+		if srv.OpenAPI.FilteredURL != "" {
+			filtered := *srv.OpenAPI
+			filtered.URL = srv.OpenAPI.FilteredURL
+			filtered.CheckMD5 = srv.OpenAPI.FilteredCheckMD5
+			fc := openapiPkg.NewClient(&filtered, config.CacheDir(name+"-filtered"), openapiPkg.WithRefresh(true))
+			ftools, ferr := fc.ListTools(ctx)
+			if ferr != nil {
+				fmt.Printf("# server %s (filtered): %v\n", name, ferr)
+			} else {
+				fcached, fdupes := countCachedTools(config.CacheDir(name+"-filtered"), len(ftools))
+				if fdupes > 0 {
+					fmt.Printf("refreshed %s (filtered): %d tools (%d duplicates collapsed)\n", name, fcached, fdupes)
+				} else {
+					fmt.Printf("refreshed %s (filtered): %d tools\n", name, fcached)
+				}
+			}
+		}
+		return nil
+	}
+	if serverName != "" {
+		return refreshOne(serverName)
+	}
+	var lastErr error
+	for name := range cfg.Servers {
+		srv, _ := cfg.Server(name)
+		if srv.OpenAPI == nil {
+			continue
+		}
+		if err := refreshOne(name); err != nil {
+			fmt.Printf("# server %s: %v\n", name, err)
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+func runList(ctx context.Context, callerType, serverName string, listFull bool, filter string, refresh bool) error {
 	printTools := func(name string, toolList []tools.ToolSchema) {
 		for _, t := range toolList {
 			if filter != "" {
@@ -211,7 +301,7 @@ func runList(ctx context.Context, callerType, serverName string, listFull bool, 
 		}
 	}
 	if serverName != "" {
-		caller, err := newCallerForList(ctx, callerType, serverName, listFull)
+		caller, err := newCallerForList(ctx, callerType, serverName, listFull, refresh)
 		if err != nil {
 			return err
 		}
@@ -234,7 +324,7 @@ func runList(ctx context.Context, callerType, serverName string, listFull bool, 
 				continue
 			}
 		}
-		caller, err := newCallerForList(ctx, callerType, name, listFull)
+		caller, err := newCallerForList(ctx, callerType, name, listFull, refresh)
 		if err != nil {
 			fmt.Printf("# server %s: %v\n", name, err)
 			continue
@@ -250,7 +340,7 @@ func runList(ctx context.Context, callerType, serverName string, listFull bool, 
 }
 
 // newCallerForList is like newCaller but uses filtered_url for HTTP --list (unless listFull).
-func newCallerForList(ctx context.Context, callerType, serverName string, listFull bool) (tools.Caller, error) {
+func newCallerForList(ctx context.Context, callerType, serverName string, listFull, refresh bool) (tools.Caller, error) {
 	if serverName == "" {
 		serverName = "default"
 	}
@@ -273,14 +363,14 @@ func newCallerForList(ctx context.Context, callerType, serverName string, listFu
 			filtered := *ocfg
 			filtered.URL = ocfg.FilteredURL
 			filtered.CheckMD5 = ocfg.FilteredCheckMD5
-			return openapiPkg.NewClient(&filtered, config.CacheDir(serverName+"-filtered")), nil
+			return openapiPkg.NewClient(&filtered, config.CacheDir(serverName+"-filtered"), openapiPkg.WithRefresh(refresh)), nil
 		}
-		return openapiPkg.NewClient(ocfg, config.CacheDir(serverName)), nil
+		return openapiPkg.NewClient(ocfg, config.CacheDir(serverName), openapiPkg.WithRefresh(refresh)), nil
 	}
 }
 
-func runDescribe(ctx context.Context, callerType, serverName, toolName string) error {
-	caller, err := resolveCallerForTool(ctx, callerType, serverName, toolName)
+func runDescribe(ctx context.Context, callerType, serverName, toolName string, refresh bool) error {
+	caller, err := resolveCallerForTool(ctx, callerType, serverName, toolName, refresh)
 	if err != nil {
 		return err
 	}
@@ -304,12 +394,12 @@ func runDescribe(ctx context.Context, callerType, serverName, toolName string) e
 
 // resolveCallerForTool tries default server first, then others.
 // If serverName is specified, only that server is tried.
-func resolveCallerForTool(ctx context.Context, callerType, serverName, toolName string) (tools.Caller, error) {
+func resolveCallerForTool(ctx context.Context, callerType, serverName, toolName string, refresh bool) (tools.Caller, error) {
 	if serverName != "" {
-		return newCaller(ctx, callerType, serverName)
+		return newCaller(ctx, callerType, serverName, refresh)
 	}
 	if _, ok := cfg.Servers["default"]; ok {
-		if caller, err := newCaller(ctx, callerType, "default"); err == nil {
+		if caller, err := newCaller(ctx, callerType, "default", refresh); err == nil {
 			if toolList, err := caller.ListTools(ctx); err == nil {
 				for _, t := range toolList {
 					if t.Name == toolName {
@@ -323,7 +413,7 @@ func resolveCallerForTool(ctx context.Context, callerType, serverName, toolName 
 		if name == "default" {
 			continue
 		}
-		caller, err := newCaller(ctx, callerType, name)
+		caller, err := newCaller(ctx, callerType, name, refresh)
 		if err != nil {
 			continue
 		}
@@ -415,7 +505,7 @@ func firstLine(s string) string {
 }
 
 // parseArgs manually parses raw CLI args.
-func parseArgs(args []string) (listAll, listFull bool, listFilter string, describe bool, callerType, serverName, toolName, nlInput string, recommend, raw bool, params map[string]any) {
+func parseArgs(args []string) (listAll, listFull bool, listFilter string, describe bool, callerType, serverName, toolName, nlInput string, recommend, raw, refresh bool, params map[string]any) {
 	params = map[string]any{}
 	callerType = "http"
 	recommend = true
@@ -453,6 +543,8 @@ func parseArgs(args []string) (listAll, listFull bool, listFilter string, descri
 			recommend = true
 		case arg == "--raw" || arg == "-r":
 			raw = true
+		case arg == "--refresh":
+			refresh = true
 		case (arg == "--type" || arg == "-t") && i+1 < len(cleaned):
 			i++
 			callerType = cleaned[i]
