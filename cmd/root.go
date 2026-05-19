@@ -30,7 +30,7 @@ var rootCmd = &cobra.Command{
   agent-tools-cli -l                       list all tools (http, default)
   agent-tools-cli -t mcp -l               list all tools via mcp
   agent-tools-cli <tool> -d               show tool parameters
-  agent-tools-cli <tool> [--param value ...]  call tool directly
+  agent-tools-cli <tool> [--param value ...]  call tool directly (also: --param=value, param=value)
   agent-tools-cli -t llm "..."            LLM recommend mode (outputs CLI command, no execution)
   agent-tools-cli -t llm "..." -e         LLM execute mode (calls tools automatically)
   agent-tools-cli -t llm "..." -e -r      LLM execute mode, output raw JSON result
@@ -103,6 +103,9 @@ Use -l and -d to discover available tools and their parameters.`,
 		caller, err := newCaller(ctx, callerType, serverName, refresh)
 		if err != nil {
 			return err
+		}
+		if nlInput != "" {
+			return fmt.Errorf("unrecognized argument(s): %s\nhint: pass tool parameters as --key value, --key=value, or key=value", nlInput)
 		}
 		result, err := caller.CallTool(ctx, toolName, params)
 		if err != nil {
@@ -548,8 +551,15 @@ func parseArgs(args []string) (listAll, listFull bool, listFilter string, descri
 		case (arg == "--type" || arg == "-t") && i+1 < len(cleaned):
 			i++
 			callerType = cleaned[i]
-		case strings.HasPrefix(arg, "--type="):
-			callerType = strings.TrimPrefix(arg, "--type=")
+		case strings.HasPrefix(arg, "--") && strings.Contains(arg, "="):
+			kv := strings.TrimPrefix(arg, "--")
+			eq := strings.Index(kv, "=")
+			name, val := kv[:eq], kv[eq+1:]
+			if name == "type" {
+				callerType = val
+			} else {
+				params[name] = val
+			}
 		case strings.HasPrefix(arg, "--") && i+1 < len(cleaned) && !strings.HasPrefix(cleaned[i+1], "--"):
 			key := strings.TrimPrefix(arg, "--")
 			var vals []string
@@ -561,6 +571,16 @@ func parseArgs(args []string) (listAll, listFull bool, listFilter string, descri
 		case strings.HasPrefix(arg, "--"):
 			key := strings.TrimPrefix(arg, "--")
 			params[key] = true
+		case toolName != "" && !strings.HasPrefix(arg, "-") && strings.Contains(arg, "="):
+			eq := strings.Index(arg, "=")
+			name, val := arg[:eq], arg[eq+1:]
+			if isIdentifier(name) {
+				params[name] = val
+			} else if nlInput == "" {
+				nlInput = arg
+			} else {
+				nlInput += " " + arg
+			}
 		case toolName == "":
 			if idx := strings.Index(arg, "/"); idx > 0 && isIdentifier(arg[:idx]) && isIdentifier(arg[idx+1:]) {
 				serverName = arg[:idx]
