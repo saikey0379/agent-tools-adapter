@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"agent-tools/clog"
@@ -134,6 +135,40 @@ type Client struct {
 	forceRefresh bool
 }
 
+// coerceValue converts a body parameter value to the type declared by the
+// OpenAPI schema. CLI flags arrive as strings, so without this the JSON body
+// would carry "10690" instead of 10690 for an integer field, etc. Path/query
+// params keep string form because URLs are textual.
+func coerceValue(val any, typ string) (any, error) {
+	s, ok := val.(string)
+	if !ok {
+		return val, nil
+	}
+	switch typ {
+	case "integer":
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expected integer, got %q", s)
+		}
+		return n, nil
+	case "number":
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expected number, got %q", s)
+		}
+		return f, nil
+	case "boolean":
+		b, err := strconv.ParseBool(s)
+		if err != nil {
+			return nil, fmt.Errorf("expected boolean, got %q", s)
+		}
+		return b, nil
+	default:
+		return s, nil
+	}
+}
+
+
 // Option configures a Client at construction time.
 type Option func(*Client)
 
@@ -238,7 +273,11 @@ func (c *Client) callHTTP(t *tools.ToolSchema, args map[string]any) (string, err
 					return "", fmt.Errorf("parameter %q requires a JSON value (object or array)", p.Name)
 				}
 			}
-			body[p.Name] = val
+			coerced, err := coerceValue(val, p.Type)
+			if err != nil {
+				return "", fmt.Errorf("parameter %q: %w", p.Name, err)
+			}
+			body[p.Name] = coerced
 		}
 	}
 
