@@ -300,7 +300,11 @@ func runList(ctx context.Context, callerType, serverName string, listFull bool, 
 					continue
 				}
 			}
-			fmt.Printf("%-40s %s\n", name+"/"+t.Name, firstLine(t.Description))
+			displayName := t.Name
+			if name != "default" {
+				displayName = name + "/" + t.Name
+			}
+			fmt.Printf("%-40s %s\n", displayName, firstLine(t.Description))
 		}
 	}
 	if serverName != "" {
