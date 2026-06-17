@@ -74,8 +74,8 @@ agent-tools-cli config show
 servers:
   default:
     openapi:
-      url: https://your-server/openapi/api.json
-      check_md5: https://your-server/openapi/api.md5   # 与 check_interval 二选一
+      url: https://your-server/openapi/avaiable_tools.json
+      check_md5: https://your-server/openapi/avaiable_tools.md5   # 与 check_interval 二选一
       # check_interval: 300                             # 单位 s，缓存过期时间
       headers:
         Authorization: "Bearer <your-token>"

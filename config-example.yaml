@@ -1,8 +1,8 @@
 servers:
   default:
     openapi:
-      url: https://agent-tools.example.com/openapi/api.json
-      check_md5: https://agent-tools.example.com/openapi/api.md5
+      url: https://agent-tools.example.com/openapi/avaiable_tools.json
+      check_md5: https://agent-tools.example.com/openapi/avaiable_tools.md5
       # check_interval: 300   # seconds; fallback freshness check for both specs
       headers:
         Authorization: "Bearer <your-token>"

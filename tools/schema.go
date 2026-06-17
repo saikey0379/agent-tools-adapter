@@ -13,6 +13,7 @@ type ToolParam struct {
 	Description string      `json:"description"`
 	Required    bool        `json:"required"`
 	In          string      `json:"in,omitempty"`         // path, query, body (openapi only)
+	Enum        []any       `json:"enum,omitempty"`       // allowed literal values from JSON Schema/OpenAPI
 	Properties  []ToolParam `json:"properties,omitempty"` // nested fields for object/array types
 }
 

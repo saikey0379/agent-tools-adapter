@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"agent-tools/clog"
@@ -248,36 +249,57 @@ func runAnthropic(ctx context.Context, cfg *config.Config, callTool func(string,
 	}
 }
 
+var arrayTypePattern = regexp.MustCompile(`^array\[(.+)\]$`)
+
+func paramJSONSchema(p tools.ToolParam) map[string]any {
+	ptype := p.Type
+	if ptype == "" {
+		ptype = "string"
+	}
+
+	prop := map[string]any{
+		"type":        ptype,
+		"description": p.Description,
+	}
+	if matches := arrayTypePattern.FindStringSubmatch(ptype); len(matches) == 2 {
+		itemType := strings.TrimSpace(matches[1])
+		if itemType == "" {
+			itemType = "string"
+		}
+		prop["type"] = "array"
+		prop["items"] = map[string]any{"type": itemType}
+	} else if ptype == "array" {
+		prop["items"] = map[string]any{"type": "string"}
+	}
+	if len(p.Enum) > 0 {
+		prop["enum"] = p.Enum
+	}
+	return prop
+}
+
+func buildToolInputSchema(t tools.ToolSchema) map[string]any {
+	props := map[string]any{}
+	required := []string{}
+	for _, p := range t.Params {
+		props[p.Name] = paramJSONSchema(p)
+		if p.Required {
+			required = append(required, p.Name)
+		}
+	}
+	schema := map[string]any{"type": "object", "properties": props}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
+}
+
 func buildOpenAITools(toolList []tools.ToolSchema, filterName string) []openai.Tool {
 	var out []openai.Tool
 	for _, t := range toolList {
 		if filterName != "" && t.Name != filterName {
 			continue
 		}
-		props := map[string]any{}
-		required := []string{}
-		for _, p := range t.Params {
-			ptype := p.Type
-			if ptype == "" {
-				ptype = "string"
-			}
-			prop := map[string]any{
-				"type":        ptype,
-				"description": p.Description,
-			}
-			if ptype == "array" {
-				prop["items"] = map[string]any{"type": "string"}
-			}
-			props[p.Name] = prop
-			if p.Required {
-				required = append(required, p.Name)
-			}
-		}
-		schema := map[string]any{"type": "object", "properties": props}
-		if len(required) > 0 {
-			schema["required"] = required
-		}
-		schemaBytes, _ := json.Marshal(schema)
+		schemaBytes, _ := json.Marshal(buildToolInputSchema(t))
 
 		out = append(out, openai.Tool{
 			Type: openai.ToolTypeFunction,
@@ -297,30 +319,7 @@ func buildAnthropicTools(toolList []tools.ToolSchema, filterName string) []anthr
 		if filterName != "" && t.Name != filterName {
 			continue
 		}
-		props := map[string]any{}
-		required := []string{}
-		for _, p := range t.Params {
-			ptype := p.Type
-			if ptype == "" {
-				ptype = "string"
-			}
-			prop := map[string]any{
-				"type":        ptype,
-				"description": p.Description,
-			}
-			if ptype == "array" {
-				prop["items"] = map[string]any{"type": "string"}
-			}
-			props[p.Name] = prop
-			if p.Required {
-				required = append(required, p.Name)
-			}
-		}
-		schema := map[string]any{"type": "object", "properties": props}
-		if len(required) > 0 {
-			schema["required"] = required
-		}
-		schemaBytes, _ := json.Marshal(schema)
+		schemaBytes, _ := json.Marshal(buildToolInputSchema(t))
 
 		tool := anthropic.ToolUnionParamOfTool(
 			anthropic.ToolInputSchemaParam{Properties: schemaBytes},

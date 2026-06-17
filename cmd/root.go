@@ -48,6 +48,7 @@ Use -l and -d to discover available tools and their parameters.`,
 	Args:               cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		rawArgs := os.Args[1:]
+		rawArgs = applyConfigArgs(rawArgs)
 
 		// check if first real arg is a known subcommand — let cobra handle it
 		for _, arg := range rawArgs {
@@ -118,6 +119,7 @@ Use -l and -d to discover available tools and their parameters.`,
 		if cmd.Name() == "init" && cmd.Parent() != nil && cmd.Parent().Name() == "config" {
 			return nil
 		}
+		applyConfigArgs(os.Args[1:])
 		return loadConfig()
 	},
 }
@@ -511,21 +513,47 @@ func firstLine(s string) string {
 	return first
 }
 
+// stripConfigArgs removes root-level config flags from args and returns the last
+// explicitly provided config path. Root disables Cobra flag parsing so direct
+// tool calls must do this before loading config.
+func stripConfigArgs(args []string) ([]string, string) {
+	cleaned := make([]string, 0, len(args))
+	var parsedCfgFile string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case (arg == "--config" || arg == "-config" || arg == "-c") && i+1 < len(args):
+			parsedCfgFile = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--config="):
+			parsedCfgFile = strings.TrimPrefix(arg, "--config=")
+		case strings.HasPrefix(arg, "-config="):
+			parsedCfgFile = strings.TrimPrefix(arg, "-config=")
+		case strings.HasPrefix(arg, "-c="):
+			parsedCfgFile = strings.TrimPrefix(arg, "-c=")
+		default:
+			cleaned = append(cleaned, arg)
+		}
+	}
+	return cleaned, parsedCfgFile
+}
+
+func applyConfigArgs(args []string) []string {
+	cleaned, parsedCfgFile := stripConfigArgs(args)
+	if parsedCfgFile != "" {
+		cfgFile = parsedCfgFile
+	}
+	return cleaned
+}
+
 // parseArgs manually parses raw CLI args.
 func parseArgs(args []string) (listAll, listFull bool, listFilter string, describe bool, callerType, serverName, toolName, nlInput string, recommend, raw, refresh bool, params map[string]any) {
 	params = map[string]any{}
 	callerType = "http"
 	recommend = true
 
-	// strip --config <val> first so it doesn't confuse tool arg parsing
-	var cleaned []string
-	for i := 0; i < len(args); i++ {
-		if (args[i] == "--config" || args[i] == "-config" || args[i] == "-c") && i+1 < len(args) {
-			i++ // skip value too
-			continue
-		}
-		cleaned = append(cleaned, args[i])
-	}
+	// strip --config first so it doesn't confuse tool arg parsing.
+	cleaned, _ := stripConfigArgs(args)
 
 	i := 0
 	for i < len(cleaned) {

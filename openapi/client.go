@@ -25,6 +25,7 @@ type orderedProp struct {
 	Ref         string
 	ItemsType   schemaType
 	ItemsRef    string
+	Enum        []any
 }
 
 // orderedProperties parses a JSON object's properties in declaration order.
@@ -46,6 +47,7 @@ func (o *orderedProperties) UnmarshalJSON(data []byte) error {
 			Type        schemaType `json:"type"`
 			Description string     `json:"description"`
 			Ref         string     `json:"$ref"`
+			Enum        []any      `json:"enum"`
 			Items       *struct {
 				Type schemaType `json:"type"`
 				Ref  string     `json:"$ref"`
@@ -59,6 +61,7 @@ func (o *orderedProperties) UnmarshalJSON(data []byte) error {
 			Type:        prop.Type,
 			Description: prop.Description,
 			Ref:         prop.Ref,
+			Enum:        prop.Enum,
 		}
 		if prop.Items != nil {
 			p.ItemsType = prop.Items.Type
@@ -93,6 +96,7 @@ func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string,
 			Name:        p.Name,
 			Description: p.Description,
 			In:          in,
+			Enum:        p.Enum,
 		}
 		t := p.Type
 		switch {
@@ -168,7 +172,6 @@ func coerceValue(val any, typ string) (any, error) {
 	}
 }
 
-
 // Option configures a Client at construction time.
 type Option func(*Client)
 
@@ -179,11 +182,44 @@ func WithRefresh(r bool) Option {
 }
 
 func NewClient(cfg *config.OpenAPIConfig, cacheDir string, opts ...Option) *Client {
+	cfg = normalizeConfig(cfg)
 	c := &Client{cfg: cfg, cache: NewCache(cacheDir)}
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c
+}
+
+func normalizeConfig(cfg *config.OpenAPIConfig) *config.OpenAPIConfig {
+	if cfg == nil {
+		return cfg
+	}
+	normalized := *cfg
+	normalized.URL = normalizeCoraToolsURL(normalized.URL)
+	normalized.FilteredURL = normalizeCoraToolsURL(normalized.FilteredURL)
+	normalized.CheckMD5 = normalizeCoraToolsURL(normalized.CheckMD5)
+	normalized.FilteredCheckMD5 = normalizeCoraToolsURL(normalized.FilteredCheckMD5)
+	return &normalized
+}
+
+func normalizeCoraToolsURL(rawURL string) string {
+	if rawURL == "" {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if u.Host != "platform.example.com" {
+		return rawURL
+	}
+	switch u.Path {
+	case "/openapi/api.json":
+		u.Path = "/openapi/avaiable_tools.json"
+	case "/openapi/api.md5":
+		u.Path = "/openapi/avaiable_tools.md5"
+	}
+	return u.String()
 }
 
 func (c *Client) ListTools(ctx context.Context) ([]tools.ToolSchema, error) {
@@ -246,10 +282,23 @@ func (c *Client) callHTTP(t *tools.ToolSchema, args map[string]any) (string, err
 	baseURL := c.baseURL()
 	path := t.Path
 	query := url.Values{}
+	bodyParams := map[string]tools.ToolParam{}
+	for _, p := range t.Params {
+		if p.In == "body" {
+			bodyParams[p.Name] = p
+		}
+	}
+	bodyArgs, err := normalizeBodyArgs(args, bodyParams)
+	if err != nil {
+		return "", err
+	}
 	body := map[string]any{}
 
 	for _, p := range t.Params {
 		val, ok := args[p.Name]
+		if p.In == "body" {
+			val, ok = bodyArgs[p.Name]
+		}
 		if !ok {
 			continue
 		}
@@ -332,6 +381,58 @@ func (c *Client) callHTTP(t *tools.ToolSchema, args map[string]any) (string, err
 	return string(data), nil
 }
 
+func normalizeBodyArgs(args map[string]any, bodyParams map[string]tools.ToolParam) (map[string]any, error) {
+	out := map[string]any{}
+	if len(bodyParams) == 0 {
+		return out, nil
+	}
+	for name := range bodyParams {
+		if val, ok := args[name]; ok {
+			out[name] = val
+		}
+	}
+	wrapped, ok := args["body"]
+	if !ok {
+		return out, nil
+	}
+	obj, err := objectValue(wrapped)
+	if err != nil {
+		return nil, fmt.Errorf("parameter %q: %w", "body", err)
+	}
+	for name, val := range obj {
+		if _, ok := bodyParams[name]; ok {
+			if _, exists := out[name]; !exists {
+				out[name] = val
+			}
+		}
+	}
+	return out, nil
+}
+
+func objectValue(val any) (map[string]any, error) {
+	switch v := val.(type) {
+	case map[string]any:
+		return v, nil
+	case map[string]string:
+		out := make(map[string]any, len(v))
+		for k, vv := range v {
+			out[k] = vv
+		}
+		return out, nil
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return map[string]any{}, nil
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+			return nil, fmt.Errorf("invalid JSON object: %w", err)
+		}
+		return parsed, nil
+	default:
+		return nil, fmt.Errorf("expected JSON object, got %T", val)
+	}
+}
+
 func (c *Client) baseURL() string {
 	u, err := url.Parse(c.cfg.URL)
 	if err != nil {
@@ -403,6 +504,7 @@ func parseSpec(data []byte) ([]tools.ToolSchema, error) {
 					Description: p.Description,
 					Required:    p.Required,
 					In:          p.In,
+					Enum:        p.Schema.Enum,
 				})
 			}
 			if op.RequestBody != nil {
@@ -450,6 +552,7 @@ func humanizeID(s string) string {
 	}
 	return b.String()
 }
+
 type schemaType string
 
 func (t *schemaType) UnmarshalJSON(data []byte) error {
@@ -485,14 +588,15 @@ type opObject struct {
 		Required    bool   `json:"required"`
 		Schema      struct {
 			Type schemaType `json:"type"`
+			Enum []any      `json:"enum"`
 		} `json:"schema"`
 	} `json:"parameters"`
 	RequestBody *struct {
 		Content map[string]struct {
 			Schema struct {
-				Ref        string             `json:"$ref"`
-				Properties orderedProperties  `json:"properties"`
-				Required   []string           `json:"required"`
+				Ref        string            `json:"$ref"`
+				Properties orderedProperties `json:"properties"`
+				Required   []string          `json:"required"`
 			} `json:"schema"`
 		} `json:"content"`
 	} `json:"requestBody"`

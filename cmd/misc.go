@@ -65,7 +65,7 @@ func runConfigInit() error {
 		tmpl := `servers:
   default:
     openapi:
-      url: https://agent-tools.example.com/openapi/api.json
+      url: https://agent-tools.example.com/openapi/avaiable_tools.json
       check_interval: 300
       headers:
         Authorization: "Bearer <your-token>"
