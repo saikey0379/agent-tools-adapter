@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,6 +45,56 @@ func TestNewClientDoesNotNormalizeOtherHosts(t *testing.T) {
 	}
 	if c.cfg.CheckMD5 != "https://agent-tools.example.com/openapi/api.md5" {
 		t.Fatalf("CheckMD5 = %q", c.cfg.CheckMD5)
+	}
+}
+
+func TestCallToolRefreshesStaleCacheBeforeReadingTool(t *testing.T) {
+	var calledPath string
+	spec := []byte(`{
+		"openapi":"3.0.0",
+		"paths":{
+			"/new":{
+				"get":{
+					"operationId":"cachedTool",
+					"summary":"Cached tool"
+				}
+			}
+		}
+	}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/md5":
+			_, _ = w.Write([]byte(md5Hex(spec)))
+		case "/openapi.json":
+			_, _ = w.Write(spec)
+		case "/new":
+			calledPath = r.URL.Path
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/old":
+			t.Fatalf("called stale cached path %s", r.URL.Path)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+	cache := NewCache(cacheDir)
+	if err := cache.Write([]tools.ToolSchema{{Name: "cached_tool", Method: http.MethodGet, Path: "/old"}}, "old-md5"); err != nil {
+		t.Fatalf("write stale cache: %v", err)
+	}
+
+	c := NewClient(&config.OpenAPIConfig{URL: srv.URL + "/openapi.json", CheckMD5: srv.URL + "/md5"}, cacheDir)
+	got, err := c.CallTool(context.Background(), "cached_tool", nil)
+	if err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	if got != "{\n  \"ok\": true\n}" {
+		t.Fatalf("CallTool() = %q", got)
+	}
+	if calledPath != "/new" {
+		t.Fatalf("called path = %q", calledPath)
 	}
 }
 

@@ -175,7 +175,7 @@ func coerceValue(val any, typ string) (any, error) {
 // Option configures a Client at construction time.
 type Option func(*Client)
 
-// WithRefresh forces the next ListTools / cache-miss path to re-fetch the spec,
+// WithRefresh forces the next ListTools / CallTool path to re-fetch the spec,
 // bypassing any valid cache. Stale tool files are pruned as part of the refresh.
 func WithRefresh(r bool) Option {
 	return func(c *Client) { c.forceRefresh = r }
@@ -223,7 +223,7 @@ func normalizeCoraToolsURL(rawURL string) string {
 }
 
 func (c *Client) ListTools(ctx context.Context) ([]tools.ToolSchema, error) {
-	if !c.forceRefresh && c.cache.IsValid(c.cfg.CheckMD5, c.cfg.CheckInterval, c.cfg.Headers) {
+	if c.cacheFresh() {
 		return c.cache.ReadAllTools()
 	}
 	return c.fetchAndCache()
@@ -243,6 +243,11 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 }
 
 func (c *Client) callToolInner(ctx context.Context, name string, args map[string]any) (string, error) {
+	if !c.cacheFresh() {
+		if _, err := c.fetchAndCache(); err != nil {
+			return "", err
+		}
+	}
 	t, err := c.cache.ReadTool(name)
 	if err != nil {
 		// cache miss — refresh once
@@ -261,6 +266,10 @@ func (c *Client) callToolInner(ctx context.Context, name string, args map[string
 		}
 	}
 	return c.callHTTP(t, args)
+}
+
+func (c *Client) cacheFresh() bool {
+	return !c.forceRefresh && c.cache.IsValid(c.cfg.CheckMD5, c.cfg.CheckInterval, c.cfg.Headers)
 }
 
 func (c *Client) fetchAndCache() ([]tools.ToolSchema, error) {

@@ -1,9 +1,16 @@
 package cmd
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"agent-tools/config"
+	"agent-tools/openapi"
+	"agent-tools/tools"
 )
 
 func TestStripConfigArgs(t *testing.T) {
@@ -54,6 +61,44 @@ func TestStripConfigArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunDescribeRefreshesWhenCachedListMissesTool(t *testing.T) {
+	oldCfg := cfg
+	defer func() { cfg = oldCfg }()
+
+	t.Setenv("HOME", t.TempDir())
+	spec := []byte(`{
+		"openapi":"3.0.0",
+		"paths":{
+			"/projects":{
+				"get":{
+					"operationId":"listProjects",
+					"summary":"List projects"
+				}
+			}
+		}
+	}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/openapi.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(spec)
+	}))
+	defer srv.Close()
+
+	cfg = &config.Config{Servers: map[string]config.ServerConfig{
+		"default": {OpenAPI: &config.OpenAPIConfig{URL: srv.URL + "/openapi.json", CheckInterval: 3600}},
+	}}
+	cache := openapi.NewCache(config.CacheDir("default"))
+	if err := cache.Write([]tools.ToolSchema{{Name: "old_tool", Method: http.MethodGet, Path: "/old"}}, "old-md5"); err != nil {
+		t.Fatalf("write stale cache: %v", err)
+	}
+
+	if err := runDescribe(context.Background(), "http", "", "list_projects", false); err != nil {
+		t.Fatalf("runDescribe() error = %v", err)
 	}
 }
 

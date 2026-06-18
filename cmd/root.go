@@ -379,6 +379,15 @@ func newCallerForList(ctx context.Context, callerType, serverName string, listFu
 }
 
 func runDescribe(ctx context.Context, callerType, serverName, toolName string, refresh bool) error {
+	if err := describeOnce(ctx, callerType, serverName, toolName, refresh); err == nil {
+		return nil
+	} else if refresh || callerType != "http" {
+		return err
+	}
+	return describeOnce(ctx, callerType, serverName, toolName, true)
+}
+
+func describeOnce(ctx context.Context, callerType, serverName, toolName string, refresh bool) error {
 	caller, err := resolveCallerForTool(ctx, callerType, serverName, toolName, refresh)
 	if err != nil {
 		return err
