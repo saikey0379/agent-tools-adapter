@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agent-tools/config"
+
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -19,15 +21,14 @@ var configCmd = &cobra.Command{
 
 var configInitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Write config template to ~/.agent-tools/config.yaml",
+	Short: fmt.Sprintf("Write config template to %s", config.UserConfigPath()),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runConfigInit()
 	},
 }
 
 func runConfigInit() error {
-	home, _ := os.UserHomeDir()
-	dest := filepath.Join(home, ".agent-tools", "config.yaml")
+	dest := config.UserConfigPath()
 	if cfgFile != "" {
 		dest = cfgFile
 	}
@@ -39,7 +40,7 @@ func runConfigInit() error {
 
 	examplePaths := []string{
 		filepath.Join(filepath.Dir(os.Args[0]), "config-example.yaml"),
-		"/etc/agent-tools/config-example.yaml",
+		config.SystemConfigExamplePath(),
 	}
 	var src string
 	for _, p := range examplePaths {
@@ -62,7 +63,7 @@ func runConfigInit() error {
 			return err
 		}
 	} else {
-		tmpl := `servers:
+		tmpl := fmt.Sprintf(`servers:
   default:
     openapi:
       url: https://agent-tools.example.com/openapi/avaiable_tools.json
@@ -77,8 +78,8 @@ func runConfigInit() error {
         X-Role-Id: "<your-role-id>"
 llm:
   token: ""
-log_file: /var/log/agent-tools-cli.log
-`
+log_file: /var/log/%s.log
+`, config.AppName)
 		if err := os.WriteFile(dest, []byte(tmpl), 0600); err != nil {
 			return err
 		}
@@ -92,8 +93,7 @@ var configShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show current config (token masked)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		home, _ := os.UserHomeDir()
-		path := filepath.Join(home, ".agent-tools", "config.yaml")
+		path := config.UserConfigPath()
 		if cfgFile != "" {
 			path = cfgFile
 		}

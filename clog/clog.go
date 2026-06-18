@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"agent-tools/config"
 )
 
 var logger *log.Logger
@@ -17,7 +19,7 @@ func Init(logFile string) {
 		return
 	}
 	if logFile == "" {
-		logFile = "/var/log/agent-tools-cli.log"
+		logFile = fmt.Sprintf("/var/log/%s.log", config.AppName)
 	}
 	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

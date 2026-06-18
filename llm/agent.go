@@ -22,9 +22,9 @@ You have access to tools that manage Kubernetes clusters, platform resources, mo
 When the user asks you to perform an action, call the appropriate tool with the correct parameters.
 Always respond concisely. If a tool call returns data, summarize the key information.`
 
-const recommendSystemPrompt = `You are a helpful assistant for the agent-tools platform CLI.
-Based on the user's request and the available tools listed below, output the recommended agent-tools-cli command to run.
-Output ONLY the command, no explanation. Format: agent-tools-cli <tool_name> [--param value ...]`
+var recommendSystemPrompt = fmt.Sprintf(`You are a helpful assistant for the agent-tools platform CLI.
+Based on the user's request and the available tools listed below, output the recommended %s command to run.
+Output ONLY the command, no explanation. Format: %s <tool_name> [--param value ...]`, config.AppName, config.AppName)
 
 // Run executes an agentic loop: user input → LLM → tool calls → result.
 // Both recommend and exec modes use function calling for consistency.
@@ -67,7 +67,7 @@ func Run(ctx context.Context, cfg *config.Config, callers []tools.ServerCaller, 
 	return runOpenAI(ctx, cfg, callTool, toolList, toolName, userInput, recommend, raw, apiKey)
 }
 
-// toolCallToCLI converts a tool call to a agent-tools-cli command string.
+// toolCallToCLI converts a tool call to a CLI command string.
 func toolCallToCLI(name string, args map[string]any, toolList []tools.ToolSchema) string {
 	serverName := "default"
 	for _, t := range toolList {
@@ -79,7 +79,7 @@ func toolCallToCLI(name string, args map[string]any, toolList []tools.ToolSchema
 		}
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("agent-tools-cli -t mcp %s/%s", serverName, name))
+	sb.WriteString(fmt.Sprintf("%s -t mcp %s/%s", config.AppName, serverName, name))
 	for k, v := range args {
 		s := fmt.Sprintf("%v", v)
 		if strings.Contains(s, " ") {

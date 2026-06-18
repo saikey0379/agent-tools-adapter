@@ -4,17 +4,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
+var AppName = "agent-tools-cli"
+
+func UserConfigDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "."+AppName)
+}
+
+func UserConfigPath() string {
+	return filepath.Join(UserConfigDir(), "config.yaml")
+}
+
+func SystemConfigDir() string {
+	return filepath.Join("/etc", AppName)
+}
+
+func SystemConfigExamplePath() string {
+	return filepath.Join(SystemConfigDir(), "config-example.yaml")
+}
+
+func EnvPrefix() string {
+	return strings.NewReplacer("-", "_", ".", "_").Replace(AppName)
+}
+
 type OpenAPIConfig struct {
 	URL              string            `mapstructure:"url" yaml:"url"`
-	FilteredURL      string            `mapstructure:"filtered_url" yaml:"filtered_url,omitempty"`           // role-filtered spec, used by default for --list
-	CheckMD5         string            `mapstructure:"check_md5" yaml:"check_md5,omitempty"`                 // md5 URL for full spec
+	FilteredURL      string            `mapstructure:"filtered_url" yaml:"filtered_url,omitempty"`             // role-filtered spec, used by default for --list
+	CheckMD5         string            `mapstructure:"check_md5" yaml:"check_md5,omitempty"`                   // md5 URL for full spec
 	FilteredCheckMD5 string            `mapstructure:"filtered_check_md5" yaml:"filtered_check_md5,omitempty"` // md5 URL for filtered spec
-	CheckInterval    int               `mapstructure:"check_interval" yaml:"check_interval,omitempty"`       // seconds, fallback for both
+	CheckInterval    int               `mapstructure:"check_interval" yaml:"check_interval,omitempty"`         // seconds, fallback for both
 	Headers          map[string]string `mapstructure:"headers" yaml:"headers,omitempty"`
 }
 
@@ -29,10 +53,10 @@ type ServerConfig struct {
 }
 
 type LLMConfig struct {
-	Type    string `mapstructure:"type" yaml:"type,omitempty"`     // "openai" (default) or "anthropic"
+	Type    string `mapstructure:"type" yaml:"type,omitempty"` // "openai" (default) or "anthropic"
 	BaseURL string `mapstructure:"base_url" yaml:"base_url,omitempty"`
 	APIKey  string `mapstructure:"api_key" yaml:"api_key,omitempty"`
-	Model   string `mapstructure:"model" yaml:"model,omitempty"`   // e.g. "gpt-4.1", "claude-sonnet-4-6"
+	Model   string `mapstructure:"model" yaml:"model,omitempty"` // e.g. "gpt-4.1", "claude-sonnet-4-6"
 }
 
 type Config struct {
@@ -78,18 +102,17 @@ func configPath(cfgFile string) string {
 	if cfgFile != "" {
 		return cfgFile
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agent-tools", "config.yaml")
+	return UserConfigPath()
 }
 
 func Load(cfgFile string) (*Config, error) {
 	viper.SetConfigFile(configPath(cfgFile))
-	viper.SetEnvPrefix("agent-tools")
+	viper.SetEnvPrefix(EnvPrefix())
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("config not found — copy /etc/agent-tools/config-example.yaml to ~/.agent-tools/config.yaml")
+			return nil, fmt.Errorf("config not found — copy %s to %s", SystemConfigExamplePath(), UserConfigPath())
 		}
 		return nil, fmt.Errorf("failed to read config %s: %w", configPath(cfgFile), err)
 	}
@@ -98,7 +121,7 @@ func Load(cfgFile string) (*Config, error) {
 		return nil, err
 	}
 	if len(cfg.Servers) == 0 {
-		return nil, fmt.Errorf("no servers configured — check your ~/.agent-tools/config.yaml")
+		return nil, fmt.Errorf("no servers configured — check your %s", UserConfigPath())
 	}
 	def, err := cfg.DefaultServer()
 	if err != nil {
@@ -124,6 +147,5 @@ func Init(cfgFile string, cfg *Config) error {
 
 // CacheDir returns the base cache directory for a server.
 func CacheDir(serverName string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".agent-tools", "cache", serverName)
+	return filepath.Join(UserConfigDir(), "cache", serverName)
 }

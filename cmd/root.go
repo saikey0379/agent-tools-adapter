@@ -23,17 +23,17 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "agent-tools-cli [-t http|mcp|llm] [-l | <tool_name> [-d] [flags...]]",
-	Short: "agent-tools CLI — universal tool adapter",
-	Long: `agent-tools-cli is a universal adapter for calling platform tools via http, mcp, or llm.
+	Use:   fmt.Sprintf("%s [-t http|mcp|llm] [-l | <tool_name> [-d] [flags...]]", config.AppName),
+	Short: fmt.Sprintf("%s — universal tool adapter", config.AppName),
+	Long: fmt.Sprintf(`%s is a universal adapter for calling platform tools via http, mcp, or llm.
 
-  agent-tools-cli -l                       list all tools (http, default)
-  agent-tools-cli -t mcp -l               list all tools via mcp
-  agent-tools-cli <tool> -d               show tool parameters
-  agent-tools-cli <tool> [--param value ...]  call tool directly (also: --param=value, param=value)
-  agent-tools-cli -t llm "..."            LLM recommend mode (outputs CLI command, no execution)
-  agent-tools-cli -t llm "..." -e         LLM execute mode (calls tools automatically)
-  agent-tools-cli -t llm "..." -e -r      LLM execute mode, output raw JSON result
+  %s -l                       list all tools (http, default)
+  %s -t mcp -l               list all tools via mcp
+  %s <tool> -d               show tool parameters
+  %s <tool> [--param value ...]  call tool directly (also: --param=value, param=value)
+  %s -t llm "..."            LLM recommend mode (outputs CLI command, no execution)
+  %s -t llm "..." -e         LLM execute mode (calls tools automatically)
+  %s -t llm "..." -e -r      LLM execute mode, output raw JSON result
 
 Flags:
   -t, --type      caller type: http (default), mcp, llm
@@ -43,7 +43,7 @@ Flags:
   -r, --raw       raw tool response without LLM summary (llm -e only)
       --refresh   force re-fetch OpenAPI spec, prune stale cached tools
 
-Use -l and -d to discover available tools and their parameters.`,
+Use -l and -d to discover available tools and their parameters.`, config.AppName, config.AppName, config.AppName, config.AppName, config.AppName, config.AppName, config.AppName, config.AppName),
 	DisableFlagParsing: true,
 	Args:               cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
@@ -182,7 +182,7 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "config file (default: ~/.agent-tools/config.yaml)")
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", fmt.Sprintf("config file (default: %s)", config.UserConfigPath()))
 	rootCmd.AddCommand(configCmd)
 }
 
