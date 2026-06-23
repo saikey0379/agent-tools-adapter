@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-tools/config"
@@ -75,7 +77,23 @@ func TestRunDescribeRefreshesWhenCachedListMissesTool(t *testing.T) {
 			"/projects":{
 				"get":{
 					"operationId":"listProjects",
-					"summary":"List projects"
+					"summary":"List projects",
+					"responses":{
+						"200":{
+							"description":"OK",
+							"content":{
+								"application/json":{
+									"schema":{
+										"type":"object",
+										"required":["data"],
+										"properties":{
+											"data":{"type":"array"}
+										}
+									}
+								}
+							}
+						}
+					}
 				}
 			}
 		}
@@ -97,8 +115,69 @@ func TestRunDescribeRefreshesWhenCachedListMissesTool(t *testing.T) {
 		t.Fatalf("write stale cache: %v", err)
 	}
 
-	if err := runDescribe(context.Background(), "http", "", "list_projects", false); err != nil {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	err = runDescribe(context.Background(), "http", "", "list_projects", false)
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	os.Stdout = oldStdout
+	if err != nil {
 		t.Fatalf("runDescribe() error = %v", err)
+	}
+	outBytes, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(outBytes)
+	if !strings.Contains(out, "Response body (JSON):") {
+		t.Fatalf("describe output missing JSON response heading:\n%s", out)
+	}
+}
+
+func TestListDescriptionPrefersSummary(t *testing.T) {
+	got := listDescription(tools.ToolSchema{
+		Summary:     "Short summary",
+		Description: "Long description",
+	})
+	if got != "Short summary" {
+		t.Fatalf("listDescription() = %q", got)
+	}
+}
+
+func TestPrintResponseFieldOmitsRequiredLabels(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+
+	printResponseField(tools.ToolParam{
+		Name:     "data",
+		Type:     "array[Project]",
+		Required: true,
+		Properties: []tools.ToolParam{
+			{Name: "id", Type: "string", Required: true},
+		},
+	}, 0)
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = oldStdout
+	outBytes, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(outBytes)
+	if strings.Contains(out, "required") {
+		t.Fatalf("response output included required label:\n%s", out)
 	}
 }
 

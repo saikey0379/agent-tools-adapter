@@ -20,10 +20,12 @@ type ToolParam struct {
 // ToolSchema describes a single tool
 type ToolSchema struct {
 	Name        string      `json:"name"`
+	Summary     string      `json:"summary,omitempty"`
 	Description string      `json:"description"`
 	Method      string      `json:"method,omitempty"` // HTTP method (openapi only)
 	Path        string      `json:"path,omitempty"`   // URL path template (openapi only)
 	Params      []ToolParam `json:"params"`
+	Response    []ToolParam `json:"response,omitempty"`    // response body schema fields (openapi only)
 	ServerName  string      `json:"server_name,omitempty"` // populated by LLM mode
 }
 

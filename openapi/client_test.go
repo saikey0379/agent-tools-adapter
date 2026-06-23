@@ -154,6 +154,35 @@ func TestCallHTTPAcceptsWrappedBodyArg(t *testing.T) {
 	}
 }
 
+func TestParseSpecKeepsSummaryAndDescription(t *testing.T) {
+	spec := []byte(`{
+		"openapi":"3.0.0",
+		"paths":{
+			"/clusters":{
+				"get":{
+					"operationId":"listPlatformClusters",
+					"summary":"列出系统集群（仅管理员，支持 type=option）",
+					"description":"从工具元数据表覆盖后的集群查询长描述"
+				}
+			}
+		}
+	}`)
+
+	got, err := parseSpec(spec)
+	if err != nil {
+		t.Fatalf("parseSpec() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(tools) = %d", len(got))
+	}
+	if got[0].Summary != "列出系统集群（仅管理员，支持 type=option）" {
+		t.Fatalf("summary = %q", got[0].Summary)
+	}
+	if got[0].Description != "从工具元数据表覆盖后的集群查询长描述" {
+		t.Fatalf("description = %q", got[0].Description)
+	}
+}
+
 func TestParseSpecPreservesEnumConstraints(t *testing.T) {
 	spec := []byte(`{
 		"openapi":"3.0.0",
@@ -202,6 +231,68 @@ func TestParseSpecPreservesEnumConstraints(t *testing.T) {
 	wantEnum := []any{"draft", "active", "archived"}
 	if !reflect.DeepEqual(params["status"].Enum, wantEnum) {
 		t.Fatalf("status enum = %#v", params["status"].Enum)
+	}
+}
+
+func TestParseSpecCapturesResponseSchema(t *testing.T) {
+	spec := []byte(`{
+		"openapi":"3.0.0",
+		"paths":{
+			"/projects":{
+				"get":{
+					"operationId":"exportProjects",
+					"responses":{
+						"200":{
+							"description":"OK",
+							"content":{
+								"application/json":{
+									"schema":{
+										"type":"object",
+										"required":["data"],
+										"properties":{
+											"data":{"type":"array","items":{"$ref":"#/components/schemas/Project"}},
+											"total":{"type":"integer","description":"Total count"}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"components":{
+			"schemas":{
+				"Project":{
+					"required":["id"],
+					"properties":{
+						"id":{"type":"string","description":"Project ID"},
+						"name":{"type":"string"}
+					}
+				}
+			}
+		}
+	}`)
+
+	got, err := parseSpec(spec)
+	if err != nil {
+		t.Fatalf("parseSpec() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(tools) = %d", len(got))
+	}
+	resp := got[0].Response
+	if len(resp) != 2 {
+		t.Fatalf("len(response) = %d, response = %#v", len(resp), resp)
+	}
+	if resp[0].Name != "data" || resp[0].Type != "array[Project]" || !resp[0].Required {
+		t.Fatalf("data response field = %#v", resp[0])
+	}
+	if len(resp[0].Properties) != 2 || resp[0].Properties[0].Name != "id" || !resp[0].Properties[0].Required {
+		t.Fatalf("data properties = %#v", resp[0].Properties)
+	}
+	if resp[1].Name != "total" || resp[1].Type != "integer" || resp[1].Description != "Total count" {
+		t.Fatalf("total response field = %#v", resp[1])
 	}
 }
 

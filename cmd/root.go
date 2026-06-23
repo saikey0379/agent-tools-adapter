@@ -296,8 +296,9 @@ func runRefresh(ctx context.Context, callerType, serverName string) error {
 func runList(ctx context.Context, callerType, serverName string, listFull bool, filter string, refresh bool) error {
 	printTools := func(name string, toolList []tools.ToolSchema) {
 		for _, t := range toolList {
+			listText := listDescription(t)
 			if filter != "" {
-				haystack := strings.ToLower(t.Name + " " + t.Description)
+				haystack := strings.ToLower(t.Name + " " + t.Summary + " " + t.Description)
 				if !strings.Contains(haystack, strings.ToLower(filter)) {
 					continue
 				}
@@ -306,7 +307,7 @@ func runList(ctx context.Context, callerType, serverName string, listFull bool, 
 			if name != "default" {
 				displayName = name + "/" + t.Name
 			}
-			fmt.Printf("%-40s %s\n", displayName, firstLine(t.Description))
+			fmt.Printf("%-40s %s\n", displayName, firstLine(listText))
 		}
 	}
 	if serverName != "" {
@@ -404,6 +405,12 @@ func describeOnce(ctx context.Context, callerType, serverName, toolName string, 
 			for _, p := range t.Params {
 				printParam(p, 0)
 			}
+			if len(t.Response) > 0 {
+				fmt.Printf("\nResponse body (JSON):\n")
+				for _, p := range t.Response {
+					printResponseField(p, 0)
+				}
+			}
 			return nil
 		}
 	}
@@ -466,6 +473,18 @@ func printParam(p tools.ToolParam, depth int) {
 	}
 }
 
+func printResponseField(p tools.ToolParam, depth int) {
+	indent := strings.Repeat("  ", depth+1)
+	desc := ""
+	if p.Description != "" {
+		desc = " " + p.Description
+	}
+	fmt.Printf("%s%-27s [%s]%s\n", indent, p.Name, p.Type, desc)
+	for _, child := range p.Properties {
+		printResponseField(child, depth+1)
+	}
+}
+
 func buildParamExample(p tools.ToolParam) any {
 	if len(p.Properties) == 0 {
 		return scalarExample(p.Type)
@@ -491,6 +510,13 @@ func scalarExample(t string) any {
 	default:
 		return ""
 	}
+}
+
+func listDescription(t tools.ToolSchema) string {
+	if t.Summary != "" {
+		return t.Summary
+	}
+	return t.Description
 }
 
 func firstLine(s string) string {

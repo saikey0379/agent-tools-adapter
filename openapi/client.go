@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -87,6 +88,10 @@ func refShortName(ref string) string {
 // resolveParams converts orderedProps to ToolParams, recursively expanding $ref.
 // visited prevents infinite loops on circular refs.
 func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string, visited map[string]bool) []tools.ToolParam {
+	return resolveParamsWithRequired(props, schemas, in, visited, nil)
+}
+
+func resolveParamsWithRequired(props []orderedProp, schemas map[string]schemaDef, in string, visited map[string]bool, required map[string]bool) []tools.ToolParam {
 	var params []tools.ToolParam
 	for _, p := range props {
 		if strings.HasPrefix(p.Name, "$") {
@@ -95,6 +100,7 @@ func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string,
 		param := tools.ToolParam{
 			Name:        p.Name,
 			Description: p.Description,
+			Required:    required[p.Name],
 			In:          in,
 			Enum:        p.Enum,
 		}
@@ -107,7 +113,7 @@ func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string,
 			if !visited[refName] {
 				if def, ok := schemas[refName]; ok {
 					visited[refName] = true
-					param.Properties = resolveParams(def.Properties.props, schemas, in, visited)
+					param.Properties = resolveParamsWithRequired(def.Properties.props, schemas, in, visited, requiredSet(def.Required))
 					delete(visited, refName)
 				}
 			}
@@ -118,7 +124,7 @@ func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string,
 				if !visited[refName] {
 					if def, ok := schemas[refName]; ok {
 						visited[refName] = true
-						param.Properties = resolveParams(def.Properties.props, schemas, in, visited)
+						param.Properties = resolveParamsWithRequired(def.Properties.props, schemas, in, visited, requiredSet(def.Required))
 						delete(visited, refName)
 					}
 				}
@@ -130,6 +136,14 @@ func resolveParams(props []orderedProp, schemas map[string]schemaDef, in string,
 		params = append(params, param)
 	}
 	return params
+}
+
+func requiredSet(required []string) map[string]bool {
+	set := map[string]bool{}
+	for _, r := range required {
+		set[r] = true
+	}
+	return set
 }
 
 // Client fetches OpenAPI spec, caches per-tool files, and calls tools via HTTP.
@@ -496,12 +510,19 @@ func parseSpec(data []byte) ([]tools.ToolSchema, error) {
 			}
 			t := tools.ToolSchema{
 				Name:        tools.ToSnakeCase(op.OperationID),
-				Description: op.Summary,
+				Summary:     op.Summary,
+				Description: op.Description,
 				Method:      strings.ToUpper(method),
 				Path:        path,
 			}
+			if t.Summary == "" {
+				t.Summary = op.Description
+			}
+			if t.Summary == "" {
+				t.Summary = humanizeID(op.OperationID)
+			}
 			if t.Description == "" {
-				t.Description = op.Description
+				t.Description = op.Summary
 			}
 			if t.Description == "" {
 				t.Description = humanizeID(op.OperationID)
@@ -517,34 +538,109 @@ func parseSpec(data []byte) ([]tools.ToolSchema, error) {
 				})
 			}
 			if op.RequestBody != nil {
-				for _, ct := range op.RequestBody.Content {
-					schema := ct.Schema
-					// resolve top-level $ref if inline properties are absent
-					if len(schema.Properties.props) == 0 && schema.Ref != "" {
-						refName := refShortName(schema.Ref)
-						if def, ok := spec.Components.Schemas[refName]; ok {
-							schema.Properties = def.Properties
-							if len(schema.Required) == 0 {
-								schema.Required = def.Required
-							}
-						}
-					}
-					reqSet := map[string]bool{}
-					for _, r := range schema.Required {
-						reqSet[r] = true
-					}
-					params := resolveParams(schema.Properties.props, spec.Components.Schemas, "body", map[string]bool{})
-					for i := range params {
-						params[i].Required = reqSet[params[i].Name]
-					}
+				if schema, ok := selectContentSchema(op.RequestBody.Content); ok {
+					params := schemaToParams(schema, spec.Components.Schemas, "body")
 					t.Params = append(t.Params, params...)
-					break
 				}
 			}
+			t.Response = responseParams(op.Responses, spec.Components.Schemas)
 			out = append(out, t)
 		}
 	}
 	return out, nil
+}
+
+func schemaToParams(schema openAPISchema, schemas map[string]schemaDef, in string) []tools.ToolParam {
+	schema = resolveTopLevelSchema(schema, schemas)
+	rootName := rootSchemaName(in)
+	if schema.Type == "array" {
+		param := tools.ToolParam{Name: rootName, Type: "array", In: in}
+		if schema.Items != nil {
+			item := resolveTopLevelSchema(*schema.Items, schemas)
+			if item.Ref != "" {
+				refName := refShortName(item.Ref)
+				param.Type = "array[" + refName + "]"
+			} else if item.Type != "" {
+				param.Type = "array[" + string(item.Type) + "]"
+			}
+			param.Properties = resolveParamsWithRequired(item.Properties.props, schemas, in, map[string]bool{}, requiredSet(item.Required))
+		}
+		return []tools.ToolParam{param}
+	}
+	if len(schema.Properties.props) == 0 && schema.Type != "" {
+		return []tools.ToolParam{{Name: rootName, Type: string(schema.Type), In: in}}
+	}
+	return resolveParamsWithRequired(schema.Properties.props, schemas, in, map[string]bool{}, requiredSet(schema.Required))
+}
+
+func rootSchemaName(in string) string {
+	if in == "response" {
+		return "response"
+	}
+	return "body"
+}
+
+func resolveTopLevelSchema(schema openAPISchema, schemas map[string]schemaDef) openAPISchema {
+	if len(schema.Properties.props) == 0 && schema.Ref != "" {
+		refName := refShortName(schema.Ref)
+		if def, ok := schemas[refName]; ok {
+			schema.Type = schemaType(refName)
+			schema.Properties = def.Properties
+			if len(schema.Required) == 0 {
+				schema.Required = def.Required
+			}
+		}
+	}
+	return schema
+}
+
+func responseParams(responses map[string]responseObject, schemas map[string]schemaDef) []tools.ToolParam {
+	if len(responses) == 0 {
+		return nil
+	}
+	for _, status := range sortedResponseStatuses(responses) {
+		resp := responses[status]
+		if schema, ok := selectContentSchema(resp.Content); ok {
+			return schemaToParams(schema, schemas, "response")
+		}
+	}
+	return nil
+}
+
+func sortedResponseStatuses(responses map[string]responseObject) []string {
+	statuses := make([]string, 0, len(responses))
+	for status := range responses {
+		if len(status) == 3 && status[0] == '2' {
+			statuses = append(statuses, status)
+		}
+	}
+	sort.Strings(statuses)
+	if len(statuses) > 0 {
+		return statuses
+	}
+	if _, ok := responses["default"]; ok {
+		return []string{"default"}
+	}
+	for status := range responses {
+		statuses = append(statuses, status)
+	}
+	sort.Strings(statuses)
+	return statuses
+}
+
+func selectContentSchema(content map[string]mediaTypeObject) (openAPISchema, bool) {
+	if len(content) == 0 {
+		return openAPISchema{}, false
+	}
+	if mt, ok := content["application/json"]; ok {
+		return mt.Schema, true
+	}
+	keys := make([]string, 0, len(content))
+	for ct := range content {
+		keys = append(keys, ct)
+	}
+	sort.Strings(keys)
+	return content[keys[0]].Schema, true
 }
 
 // humanizeID converts camelCase/snake_case operationId to a readable string.
@@ -586,6 +682,23 @@ func (t *schemaType) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type openAPISchema struct {
+	Type       schemaType        `json:"type"`
+	Ref        string            `json:"$ref"`
+	Properties orderedProperties `json:"properties"`
+	Required   []string          `json:"required"`
+	Items      *openAPISchema    `json:"items"`
+}
+
+type mediaTypeObject struct {
+	Schema openAPISchema `json:"schema"`
+}
+
+type responseObject struct {
+	Description string                     `json:"description"`
+	Content     map[string]mediaTypeObject `json:"content"`
+}
+
 type opObject struct {
 	OperationID string `json:"operationId"`
 	Summary     string `json:"summary"`
@@ -601,12 +714,7 @@ type opObject struct {
 		} `json:"schema"`
 	} `json:"parameters"`
 	RequestBody *struct {
-		Content map[string]struct {
-			Schema struct {
-				Ref        string            `json:"$ref"`
-				Properties orderedProperties `json:"properties"`
-				Required   []string          `json:"required"`
-			} `json:"schema"`
-		} `json:"content"`
+		Content map[string]mediaTypeObject `json:"content"`
 	} `json:"requestBody"`
+	Responses map[string]responseObject `json:"responses"`
 }
