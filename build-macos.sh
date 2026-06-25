@@ -7,6 +7,10 @@ VERSION="${VERSION:-0.0.1}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --name)
+      if [[ $# -lt 2 ]]; then
+        echo "missing value for --name" >&2
+        exit 1
+      fi
       NAME="${2:-}"
       shift 2
       ;;
@@ -14,8 +18,20 @@ while [[ $# -gt 0 ]]; do
       NAME="${1#*=}"
       shift
       ;;
+    --version)
+      if [[ $# -lt 2 ]]; then
+        echo "missing value for --version" >&2
+        exit 1
+      fi
+      VERSION="${2:-}"
+      shift 2
+      ;;
+    --version=*)
+      VERSION="${1#*=}"
+      shift
+      ;;
     -h|--help)
-      echo "Usage: $0 [--name <binary-and-package-name>]"
+      echo "Usage: $0 [--name <binary-and-package-name>] [--version <package-version>]"
       exit 0
       ;;
     *)
@@ -28,6 +44,12 @@ done
 if [[ -z "$NAME" || ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   echo "invalid --name: ${NAME}" >&2
   echo "name must start with a letter or number and contain only letters, numbers, dot, underscore, or hyphen" >&2
+  exit 1
+fi
+
+if [[ -z "$VERSION" || ! "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._+~]*$ ]]; then
+  echo "invalid --version: ${VERSION}" >&2
+  echo "version must start with a letter or number and contain only letters, numbers, dot, underscore, plus, or tilde" >&2
   exit 1
 fi
 
